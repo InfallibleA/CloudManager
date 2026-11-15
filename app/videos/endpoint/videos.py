@@ -37,9 +37,16 @@ async def upload_video(
     user: FromDishka[UserResponseSchema],
     name: Annotated[str, Form(min_length=1, max_length=255, description='Уникальное имя видео')],
     file: Annotated[UploadFile, File(description=f'Видео: {VIDEO_TYPES_HINT}')],
+    folder_id: Annotated[
+        UUID | None, Form(description='Папка пользователя, в которую сразу кладётся видео')
+    ] = None,
 ) -> VideoResponseSchema:
     return await videos_service.upload(
-        name=name, filename=file.filename, stream=file.file, size=file.size
+        name=name,
+        filename=file.filename,
+        stream=file.file,
+        size=file.size,
+        folder_id=folder_id,
     )
 
 

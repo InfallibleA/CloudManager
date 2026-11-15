@@ -9,8 +9,10 @@ from tests.fakes import (
     FakeFilesRepository,
     FakeFileStorage,
     FakeFoldersRepository,
+    FakeVideosRepository,
     seed_file,
     seed_folder,
+    seed_video,
 )
 
 
@@ -20,11 +22,13 @@ async def create_folder(
     name: str = 'Документы',
     parent_id=None,
     file_ids: list | None = None,
+    video_ids: list | None = None,
 ):
     """Создаёт папку через REST так же, как это делает фронтенд."""
     payload: dict = {
         'name': name,
         'file_ids': [str(file_id) for file_id in file_ids or []],
+        'video_ids': [str(video_id) for video_id in video_ids or []],
     }
     if parent_id is not None:
         payload['parent_id'] = str(parent_id)
@@ -374,6 +378,97 @@ async def test_file_deleted_from_files_module_leaves_folder(
     await client.delete(f'/api/files/{file.id}')
 
     assert (await client.get(f'/api/folders/{folder_id}')).json()['files'] == []
+
+
+async def test_folder_content_includes_videos(
+    client: AsyncClient,
+    fake_repository: FakeFilesRepository,
+    fake_videos_repository: FakeVideosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Содержимое папки отдаёт видео рядом с файлами — отдельным списком `videos`."""
+    file = await seed_file(fake_repository, fake_storage, name='Договор')
+    video = await seed_video(fake_videos_repository, fake_storage, name='Обзор')
+    folder_id = (
+        await create_folder(client, file_ids=[file.id], video_ids=[video.id])
+    ).json()['id']
+
+    body = (await client.get(f'/api/folders/{folder_id}')).json()
+
+    assert [item['name'] for item in body['files']] == ['Договор']
+    assert [item['name'] for item in body['videos']] == ['Обзор']
+    assert body['videos'][0]['id'] == str(video.id)
+    assert body['videos'][0]['type'] == 'mp4'
+    assert body['videos'][0]['size'] == len(b'video-data')
+    assert body['videos'][0]['created_at']
+
+
+async def test_video_link_records_current_user(
+    client: AsyncClient,
+    fake_videos_repository: FakeVideosRepository,
+    fake_folders_repository: FakeFoldersRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Связь папки с видео знает, кто именно положил видео в папку."""
+    video = await seed_video(fake_videos_repository, fake_storage, name='Обзор')
+
+    folder_id = (await create_folder(client, video_ids=[video.id])).json()['id']
+
+    assert fake_folders_repository.video_creators[(UUID(folder_id), video.id)] == ADMIN_USER_ID
+
+
+async def test_update_replaces_videos(
+    client: AsyncClient,
+    fake_videos_repository: FakeVideosRepository,
+    fake_storage: FakeFileStorage,
+):
+    first = await seed_video(fake_videos_repository, fake_storage, name='Первый')
+    second = await seed_video(fake_videos_repository, fake_storage, name='Второй')
+    folder_id = (await create_folder(client, video_ids=[first.id])).json()['id']
+
+    body = (
+        await client.patch(f'/api/folders/{folder_id}', json={'video_ids': [str(second.id)]})
+    ).json()
+
+    assert [item['name'] for item in body['videos']] == ['Второй']
+
+
+async def test_create_rejects_unknown_video(client: AsyncClient):
+    response = await create_folder(client, video_ids=[uuid4()])
+
+    assert response.status_code == 400
+    assert 'Видео не найдены' in response.json()['detail']
+
+
+async def test_delete_removes_folder_with_videos(
+    client: AsyncClient,
+    fake_videos_repository: FakeVideosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Удаление папки уносит видео внутри — включая объекты из хранилища."""
+    video = await seed_video(fake_videos_repository, fake_storage, name='Обзор')
+    folder_id = (await create_folder(client, video_ids=[video.id])).json()['id']
+
+    response = await client.delete(f'/api/folders/{folder_id}')
+
+    assert response.status_code == 204
+    assert fake_videos_repository.items == {}
+    assert fake_storage.objects == {}
+    assert (await client.get(f'/api/videos/{video.id}')).status_code == 404
+
+
+async def test_video_deleted_from_videos_module_leaves_folder(
+    client: AsyncClient,
+    fake_videos_repository: FakeVideosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Видео, удалённое через /api/videos, исчезает и из выдачи папки."""
+    video = await seed_video(fake_videos_repository, fake_storage, name='Обзор')
+    folder_id = (await create_folder(client, video_ids=[video.id])).json()['id']
+
+    await client.delete(f'/api/videos/{video.id}')
+
+    assert (await client.get(f'/api/folders/{folder_id}')).json()['videos'] == []
 
 
 async def test_admin_has_full_access_to_foreign_folder(

@@ -44,6 +44,20 @@ class VideoResponseSchema(CloudManagerBaseModel):
     created_at: datetime
 
 
+class VideoShortSchema(CloudManagerBaseModel):
+    """Краткое представление видео — для содержимого папки.
+
+    Ключ объекта нужен только видео-модулю: видео адресуется по id,
+    а `created_at` показывает в интерфейсе дату загрузки.
+    """
+
+    id: UUID
+    name: str
+    type: EVideoType
+    size: int
+    created_at: datetime
+
+
 class VideoPlaybackSchema(CloudManagerBaseModel):
     """Presigned-ссылка на воспроизведение видео."""
 

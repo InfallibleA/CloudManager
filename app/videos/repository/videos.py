@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.context import Context
 from app.core.dependencies import Paginator
@@ -8,6 +8,7 @@ from app.core.engines.database import Transaction
 from app.core.exceptions import ObjectNotFoundException
 from app.core.repositories.soft_base_repository import SoftBaseRepository
 from app.core.schemes import PaginatedSchema
+from app.folders.model.folder_video import folder_videos
 from app.videos.model.video import Video
 from app.videos.schema.videos import VideoCreateSchema, VideoFilterSchema, VideoResponseSchema
 
@@ -67,8 +68,44 @@ class VideosRepository(SoftBaseRepository):
             raise ObjectNotFoundException(object_id=pk, object_class=db_model)
         return creator_id
 
+    async def get_many(self, *, pks: list[UUID]) -> list[VideoResponseSchema]:
+        """Возвращает неудалённые видео по списку id (для связей и проверок)."""
+        if not pks:
+            return []
+
+        return await self._get_list(
+            self._model_class.id.in_(pks), schema=VideoResponseSchema, scalars=True
+        )
+
     async def delete_one(self, *, pk: UUID) -> VideoResponseSchema:
         """Мягко удаляет видео и возвращает его данные для удаления объекта из S3."""
-        video = await self._get_one(pk, VideoResponseSchema, scalars=True)
-        await self._delete_one(pk)
-        return video
+        videos = await self.delete_many(pks=[pk])
+        return videos[0]
+
+    async def delete_many(self, *, pks: list[UUID]) -> list[VideoResponseSchema]:
+        """Мягко удаляет видео, убирает их связи с папками и возвращает записи.
+
+        Связи из `folder_videos` нельзя удалить каскадом БД, поэтому они убираются
+        явно — иначе в таблице останутся «висячие» записи. Возвращённые записи
+        нужны сервису, чтобы почистить объекты в S3-хранилище.
+        """
+        if not pks:
+            return []
+
+        videos = await self.get_many(pks=pks)
+        found_ids = {video.id for video in videos}
+        for pk in pks:
+            if pk not in found_ids:
+                raise ObjectNotFoundException(object_id=pk, object_class=self._model_class)
+
+        async with self.transaction.atomic():
+            await self._unlink_folders(pks=list(found_ids))
+            await self._delete_many(list(found_ids))
+
+        return videos
+
+    async def _unlink_folders(self, *, pks: list[UUID]) -> None:
+        """Убирает видео из папок (таблица folder_videos)."""
+        await self.transaction.execute(
+            delete(folder_videos).where(folder_videos.c.video_id.in_(pks))
+        )

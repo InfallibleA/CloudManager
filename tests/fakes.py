@@ -40,7 +40,12 @@ from app.users.schema.users import (
 )
 from app.videos.model.video import Video
 from app.videos.repository.videos import VideosRepository
-from app.videos.schema.videos import VideoCreateSchema, VideoFilterSchema, VideoResponseSchema
+from app.videos.schema.videos import (
+    VideoCreateSchema,
+    VideoFilterSchema,
+    VideoResponseSchema,
+    VideoShortSchema,
+)
 
 
 class FakeUsersRepository(UsersRepository):
@@ -167,6 +172,39 @@ class FakeFolderFileLinks:
 
     def unlink_folder(self, *, folder_ids: list[UUID]) -> None:
         """Убирает связи папок (как _unlink_files)."""
+        for folder_id in folder_ids:
+            self.links.pop(folder_id, None)
+            for key in [key for key in self.creators if key[0] == folder_id]:
+                del self.creators[key]
+
+
+class FakeFolderVideoLinks:
+    """Таблица связей «папка — видео» в памяти, общая для фейковых репозиториев.
+
+    Реальный репозиторий видео чистит связи при удалении видео, а репозиторий
+    папок — при удалении папки; здесь это повторяет одна общая таблица.
+    creator_id хранится рядом: по нему видно, кто положил видео в папку.
+    """
+
+    def __init__(self) -> None:
+        self.links: dict[UUID, set[UUID]] = {}
+        # Кто положил видео в папку: ключ — пара (папка, видео)
+        self.creators: dict[tuple[UUID, UUID], UUID | None] = {}
+
+    def link(self, *, folder_id: UUID, video_ids: set[UUID], creator_id: UUID | None) -> None:
+        self.unlink_folder(folder_ids=[folder_id])
+        self.links[folder_id] = set(video_ids)
+        for video_id in video_ids:
+            self.creators[(folder_id, video_id)] = creator_id
+
+    def unlink_video(self, *, video_id: UUID) -> None:
+        """Убирает видео из связей всех папок (как _unlink_folders)."""
+        for folder_id, video_ids in self.links.items():
+            video_ids.discard(video_id)
+            self.creators.pop((folder_id, video_id), None)
+
+    def unlink_folder(self, *, folder_ids: list[UUID]) -> None:
+        """Убирает связи папок (как _unlink_videos)."""
         for folder_id in folder_ids:
             self.links.pop(folder_id, None)
             for key in [key for key in self.creators if key[0] == folder_id]:
@@ -303,6 +341,8 @@ class FakeVideosRepository(VideosRepository):
     def __init__(self) -> None:
         self.items: dict[UUID, VideoResponseSchema] = {}
         self.creators: dict[UUID, UUID | None] = {}
+        # таблица folder_videos в памяти: общая с фейком папок
+        self.folder_links = FakeFolderVideoLinks()
         # в реальном репозитории creator_id берётся из контекста запроса
         self._owner: UUID | None = None
         # Имитация гонки: имя свободно при проверке, но занято при вставке
@@ -373,11 +413,25 @@ class FakeVideosRepository(VideosRepository):
             raise ObjectNotFoundException(object_id=pk, object_class=Video)
         return self.creators.get(pk)
 
+    async def get_many(self, *, pks: list[UUID]) -> list[VideoResponseSchema]:
+        return [self.items[pk] for pk in pks if pk in self.items]
+
     async def delete_one(self, *, pk: UUID) -> VideoResponseSchema:
-        video = await self.get_one(pk=pk)
-        del self.items[pk]
-        self.creators.pop(pk, None)
-        return video
+        videos = await self.delete_many(pks=[pk])
+        return videos[0]
+
+    async def delete_many(self, *, pks: list[UUID]) -> list[VideoResponseSchema]:
+        videos = await self.get_many(pks=pks)
+        found_ids = {video.id for video in videos}
+        for pk in pks:
+            if pk not in found_ids:
+                raise ObjectNotFoundException(object_id=pk, object_class=Video)
+
+        for pk in found_ids:
+            del self.items[pk]
+            self.creators.pop(pk, None)
+            self.folder_links.unlink_video(video_id=pk)
+        return videos
 
 
 async def seed_video(
@@ -509,12 +563,18 @@ class FakeFoldersRepository(FoldersRepository):
     """
 
     def __init__(
-        self, *, files_repository: FakeFilesRepository, owner_id: UUID | None = None
+        self,
+        *,
+        files_repository: FakeFilesRepository,
+        videos_repository: FakeVideosRepository,
+        owner_id: UUID | None = None,
     ) -> None:
         self.items: dict[UUID, FolderResponseSchema] = {}
         self.creators: dict[UUID, UUID | None] = {}
         self._links = files_repository.folder_links
         self._files_repository = files_repository
+        self._video_links = videos_repository.folder_links
+        self._videos_repository = videos_repository
         # в реальном репозитории владелец берётся из контекста запроса
         self._owner = owner_id
         self._admin = False
@@ -541,6 +601,16 @@ class FakeFoldersRepository(FoldersRepository):
         """Кто привязал файл к папке — как creator_id в таблице folder_files."""
         return self._links.creators
 
+    @property
+    def video_links(self) -> dict[UUID, set[UUID]]:
+        """Связи папок с видео — та же таблица, что чистит репозиторий видео."""
+        return self._video_links.links
+
+    @property
+    def video_creators(self) -> dict[tuple[UUID, UUID], UUID | None]:
+        """Кто привязал видео к папке — как creator_id в таблице folder_videos."""
+        return self._video_links.creators
+
     async def create_one(self, *, data: FolderCreateSchema) -> FolderResponseSchema:
         folder = FolderResponseSchema(
             id=uuid4(),
@@ -553,7 +623,10 @@ class FakeFoldersRepository(FoldersRepository):
         self._links.link(
             folder_id=folder.id, file_ids=set(data.file_ids), creator_id=self._owner
         )
-        return self._with_files(folder)
+        self._video_links.link(
+            folder_id=folder.id, video_ids=set(data.video_ids), creator_id=self._owner
+        )
+        return self._with_videos(self._with_files(folder))
 
     async def create_root(self, *, owner_id: UUID, name: str) -> FolderResponseSchema:
         """Корневая папка регистрации: владелец задаётся явно, без текущего пользователя."""
@@ -589,7 +662,9 @@ class FakeFoldersRepository(FoldersRepository):
 
     async def get_one(self, *, pk: UUID) -> FolderResponseSchema:
         folder = await self._mine(pk)
-        return self._with_files(folder).model_copy(update={'children': self._children(pk=pk)})
+        return self._with_videos(self._with_files(folder)).model_copy(
+            update={'children': self._children(pk=pk)}
+        )
 
     async def get_list(
         self, *, filters: FolderFilterSchema, paginator: Paginator
@@ -609,16 +684,20 @@ class FakeFoldersRepository(FoldersRepository):
             offset=offset,
             page=paginator.page,
             page_size=paginator.page_size,
-            data=[self._with_files(item) for item in page],
+            data=[self._with_videos(self._with_files(item)) for item in page],
         )
 
     async def update_one(self, *, pk: UUID, data: FolderUpdateSchema) -> FolderResponseSchema:
         folder = await self._mine(pk)
-        values = data.model_dump(exclude={'file_ids'}, exclude_unset=True)
+        values = data.model_dump(exclude={'file_ids', 'video_ids'}, exclude_unset=True)
         self.items[pk] = folder.model_copy(update=values)
         if data.file_ids is not None:
             self._links.link(
                 folder_id=pk, file_ids=set(data.file_ids), creator_id=self._owner
+            )
+        if data.video_ids is not None:
+            self._video_links.link(
+                folder_id=pk, video_ids=set(data.video_ids), creator_id=self._owner
             )
         return await self.get_one(pk=pk)
 
@@ -652,8 +731,24 @@ class FakeFoldersRepository(FoldersRepository):
                     file_ids.append(file_id)
         return file_ids
 
+    async def get_video_ids(self, *, folder_ids: list[UUID]) -> list[UUID]:
+        video_ids: list[UUID] = []
+        for folder_id in folder_ids:
+            for video_id in sorted(self.video_links.get(folder_id, set()), key=str):
+                if video_id in self._videos_repository.items and video_id not in video_ids:
+                    video_ids.append(video_id)
+        return video_ids
+
+    async def attach_video(self, *, folder_id: UUID, video_id: UUID) -> None:
+        await self.has_one(folder_id, raise_error=True)
+        video_ids = set(self.video_links.get(folder_id, set())) | {video_id}
+        self._video_links.link(
+            folder_id=folder_id, video_ids=video_ids, creator_id=self._owner
+        )
+
     async def delete_subtree(self, *, folder_ids: list[UUID]) -> None:
         self._links.unlink_folder(folder_ids=folder_ids)
+        self._video_links.unlink_folder(folder_ids=folder_ids)
         for folder_id in folder_ids:
             self.items.pop(folder_id, None)
             self.creators.pop(folder_id, None)
@@ -708,6 +803,14 @@ class FakeFoldersRepository(FoldersRepository):
         ]
         return folder.model_copy(update={'files': files})
 
+    def _with_videos(self, folder: FolderResponseSchema) -> FolderResponseSchema:
+        videos = [
+            VideoShortSchema.model_validate(video, from_attributes=True)
+            for video_id in sorted(self.video_links.get(folder.id, set()), key=str)
+            if (video := self._videos_repository.items.get(video_id)) is not None
+        ]
+        return folder.model_copy(update={'videos': videos})
+
 
 async def seed_folder(
     repository: FakeFoldersRepository,
@@ -715,11 +818,17 @@ async def seed_folder(
     name: str = 'Папка',
     parent_id: UUID | None = None,
     file_ids: list[UUID] | None = None,
+    video_ids: list[UUID] | None = None,
     creator_id: UUID | None = None,
 ) -> FolderResponseSchema:
     """Кладёт папку в подменённую БД; `creator_id` — от чьего лица она создана."""
     folder = await repository.create_one(
-        data=FolderCreateSchema(name=name, parent_id=parent_id, file_ids=file_ids or [])
+        data=FolderCreateSchema(
+            name=name,
+            parent_id=parent_id,
+            file_ids=file_ids or [],
+            video_ids=video_ids or [],
+        )
     )
     if creator_id is not None:
         repository.creators[folder.id] = creator_id

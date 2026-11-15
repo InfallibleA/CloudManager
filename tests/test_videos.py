@@ -5,7 +5,13 @@ from httpx import AsyncClient
 
 from app.core.enums import EVideoType
 from app.videos.constants import VIDEO_TYPES
-from tests.fakes import FakeFileStorage, FakeVideosRepository, seed_video
+from tests.fakes import (
+    FakeFileStorage,
+    FakeFoldersRepository,
+    FakeVideosRepository,
+    seed_folder,
+    seed_video,
+)
 
 VIDEO_BYTES = b'\x00\x00\x00\x18ftypmp42 test-video'
 
@@ -16,10 +22,14 @@ async def upload_video(
     name: str = 'Видео',
     filename: str = 'video.mp4',
     data: bytes = VIDEO_BYTES,
+    folder_id=None,
 ):
     """Загружает видео через REST так же, как это делает фронтенд."""
+    form = {'name': name}
+    if folder_id is not None:
+        form['folder_id'] = str(folder_id)
     return await client.post(
-        '/api/videos', data={'name': name}, files={'file': (filename, data, 'video/mp4')}
+        '/api/videos', data=form, files={'file': (filename, data, 'video/mp4')}
     )
 
 
@@ -88,6 +98,33 @@ async def test_upload_cleans_object_when_name_taken_in_race(
 
     assert response.status_code == 409
     # Загруженный объект удалён: «сироты» в хранилище не остаётся
+    assert fake_storage.objects == {}
+
+
+async def test_upload_into_folder(client: AsyncClient, fake_storage: FakeFileStorage):
+    """`folder_id` сразу кладёт загруженное видео в папку пользователя."""
+    folder_id = (await client.post('/api/folders', json={'name': 'Видеоархив'})).json()['id']
+
+    response = await upload_video(client, name='В папке', folder_id=folder_id)
+
+    assert response.status_code == 201
+    folder = (await client.get(f'/api/folders/{folder_id}')).json()
+    assert [item['name'] for item in folder['videos']] == ['В папке']
+    assert folder['videos'][0]['id'] == response.json()['id']
+
+
+async def test_upload_into_foreign_folder_is_rejected(
+    client_as_client: AsyncClient,
+    fake_folders_repository: FakeFoldersRepository,
+    fake_storage: FakeFileStorage,
+):
+    """В чужую папку видео не положить: отказ до загрузки объекта в хранилище."""
+    folder = await seed_folder(fake_folders_repository, name='Чужая', creator_id=uuid4())
+
+    response = await upload_video(client_as_client, name='Чужое', folder_id=folder.id)
+
+    assert response.status_code == 400
+    assert 'Папка не найдена' in response.json()['detail']
     assert fake_storage.objects == {}
 
 

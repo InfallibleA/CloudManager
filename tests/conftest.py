@@ -125,10 +125,15 @@ class TestProvider(Provider):
 
     @provide(scope=Scope.REQUEST)
     def get_folders_service(
-        self, folders_repository: FoldersRepository, files_service: FilesService
+        self,
+        folders_repository: FoldersRepository,
+        files_service: FilesService,
+        videos_service: VideosService,
     ) -> FoldersService:
         return FoldersService(
-            folders_repository=folders_repository, files_service=files_service
+            folders_repository=folders_repository,
+            files_service=files_service,
+            videos_service=videos_service,
         )
 
     @provide(scope=Scope.REQUEST)
@@ -181,10 +186,17 @@ class TestProvider(Provider):
 
     @provide(scope=Scope.REQUEST)
     def get_videos_service(
-        self, videos_repository: VideosRepository, file_storage: FileStorage, config: Settings
+        self,
+        videos_repository: VideosRepository,
+        folders_repository: FoldersRepository,
+        file_storage: FileStorage,
+        config: Settings,
     ) -> VideosService:
         return VideosService(
-            videos_repository=videos_repository, file_storage=file_storage, config=config
+            videos_repository=videos_repository,
+            folders_repository=folders_repository,
+            file_storage=file_storage,
+            config=config,
         )
 
     @provide(scope=Scope.REQUEST)
@@ -203,8 +215,12 @@ def fake_repository() -> FakeFilesRepository:
 
 
 @pytest.fixture
-def fake_folders_repository(fake_repository: FakeFilesRepository) -> FakeFoldersRepository:
-    return FakeFoldersRepository(files_repository=fake_repository)
+def fake_folders_repository(
+    fake_repository: FakeFilesRepository, fake_videos_repository: FakeVideosRepository
+) -> FakeFoldersRepository:
+    return FakeFoldersRepository(
+        files_repository=fake_repository, videos_repository=fake_videos_repository
+    )
 
 
 @pytest.fixture

@@ -130,7 +130,8 @@ Readiness-проба: проверяет доступность сервиса �
   * `name` (str, 1–255 символов).
   * `parent_id` (`UUID | None`, по умолчанию `null` — в корневой папке пользователя).
   * `file_ids` (`list[UUID]`, опционально) — файлы, сразу привязываемые к папке.
-* **Ответ `201 Created`**: `FolderResponseSchema` (`id`, `name`, `parent_id`, `is_root`, `created_at`, `files: list[FileShortSchema]`, `children: list[FolderShortSchema]`).
+  * `video_ids` (`list[UUID]`, опционально) — видео, сразу привязываемые к папке.
+* **Ответ `201 Created`**: `FolderResponseSchema` (`id`, `name`, `parent_id`, `is_root`, `created_at`, `files: list[FileShortSchema]`, `videos: list[VideoShortSchema]`, `children: list[FolderShortSchema]`).
 
 ### `GET /api/folders`
 Список папок с фильтрацией и пагинацией.
@@ -144,23 +145,24 @@ Readiness-проба: проверяет доступность сервиса �
 * **Ответ `200 OK`**: `PaginatedSchema[FolderResponseSchema]`.
 
 ### `GET /api/folders/{folder_id}`
-Получение папки вместе с её файлами и подпапками.
+Получение папки вместе с её файлами, видео и подпапками.
 * **Доступ**: Bearer-токен.
 * **Path-параметр**: `folder_id` (`UUID`).
-* **Ответ `200 OK`**: `FolderResponseSchema`.
+* **Ответ `200 OK`**: `FolderResponseSchema` — файлы в `files`, видео в `videos`.
 
 ### `PATCH /api/folders/{folder_id}`
-Изменение папки (переименование, перенос, обновление списка файлов).
+Изменение папки (переименование, перенос, обновление списков файлов и видео).
 * **Доступ**: Bearer-токен.
 * **Path-параметр**: `folder_id` (`UUID`).
 * **Тело запроса**: `FolderUpdateSchema`
   * `name` (`str | None`, 1–255 символов).
   * `parent_id` (`UUID | None`, `null` переносит папку в корневую папку, отсутствие поля не меняет родителя).
   * `file_ids` (`list[UUID] | None`, полный новый набор файлов, отсутствие поля не меняет связи).
+  * `video_ids` (`list[UUID] | None`, полный новый набор видео, отсутствие поля не меняет связи).
 * **Ответ `200 OK`**: `FolderResponseSchema`.
 
 ### `DELETE /api/folders/{folder_id}`
-Удаление папки вместе со всеми вложенными подпапками и файлами внутри.
+Удаление папки вместе со всеми вложенными подпапками, файлами и видео внутри.
 * **Доступ**: Bearer-токен.
 * **Path-параметр**: `folder_id` (`UUID`).
 * **Ответ `204 No Content`**.
@@ -175,7 +177,9 @@ Readiness-проба: проверяет доступность сервиса �
 * **Тип запроса**: `multipart/form-data`
   * `name` (str, Form, 1–255 символов) — уникальное имя видео.
   * `file` (`UploadFile`, File) — видеофайл разрешённого типа.
+  * `folder_id` (`UUID`, Form, опционально) — папка пользователя, в которую сразу кладётся видео.
 * **Ответ `201 Created`**: `VideoResponseSchema` (`id`, `name`, `object_key`, `type`, `size`, `created_at`).
+* **Ответ `400 Bad Request`**: папка `folder_id` не найдена или принадлежит другому пользователю.
 
 ### `GET /api/videos`
 Список видео с фильтрацией и пагинацией. Авторизация не требуется.

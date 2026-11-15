@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from uuid import UUID
 
 from sqlalchemy import delete, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.context import Context
 from app.core.dependencies import Paginator
@@ -16,6 +17,7 @@ from app.files.model.file import File
 from app.files.schema.files import FileShortSchema
 from app.folders.model.folder import Folder
 from app.folders.model.folder_file import folder_files
+from app.folders.model.folder_video import folder_videos
 from app.folders.schema.folders import (
     FolderCreateInternalSchema,
     FolderCreateSchema,
@@ -24,6 +26,8 @@ from app.folders.schema.folders import (
     FolderShortSchema,
     FolderUpdateSchema,
 )
+from app.videos.model.video import Video
+from app.videos.schema.videos import VideoShortSchema
 
 
 class FoldersRepository(SoftBaseRepository):
@@ -75,12 +79,13 @@ class FoldersRepository(SoftBaseRepository):
             self._all_owners = previous
 
     async def create_one(self, *, data: FolderCreateSchema) -> FolderResponseSchema:
-        """Создаёт папку от лица текущего пользователя и кладёт в неё файлы."""
+        """Создаёт папку от лица текущего пользователя и кладёт в неё файлы и видео."""
         internal = FolderCreateInternalSchema(name=data.name, parent_id=data.parent_id)
 
         async with self.transaction.atomic():
             folder = await self._create_one(internal, FolderResponseSchema)
             await self._add_files(folder_id=folder.id, file_ids=data.file_ids)
+            await self._add_videos(folder_id=folder.id, video_ids=data.video_ids)
 
         return await self.get_one(pk=folder.id)
 
@@ -136,12 +141,19 @@ class FoldersRepository(SoftBaseRepository):
         return bool(await self.transaction.scalars(query))
 
     async def get_one(self, *, pk: UUID) -> FolderResponseSchema:
-        """Отдаёт папку вместе с её файлами и подпапками."""
+        """Отдаёт папку вместе с её файлами, видео и подпапками."""
         with self._full_access():
             folder = await self._get_one(pk, FolderResponseSchema, scalars=True)
             files = await self._load_files(folder_ids=[pk])
+            videos = await self._load_videos(folder_ids=[pk])
             children = await self._get_children(pk=pk)
-        return folder.model_copy(update={'files': files.get(pk, []), 'children': children})
+        return folder.model_copy(
+            update={
+                'files': files.get(pk, []),
+                'videos': videos.get(pk, []),
+                'children': children,
+            }
+        )
 
     async def get_list(
         self, *, filters: FolderFilterSchema, paginator: Paginator
@@ -181,26 +193,34 @@ class FoldersRepository(SoftBaseRepository):
 
         folders = page.data or []
         files = await self._load_files(folder_ids=[folder.id for folder in folders])
+        videos = await self._load_videos(folder_ids=[folder.id for folder in folders])
         return page.model_copy(
             update={
                 'data': [
-                    folder.model_copy(update={'files': files.get(folder.id, [])})
+                    folder.model_copy(
+                        update={
+                            'files': files.get(folder.id, []),
+                            'videos': videos.get(folder.id, []),
+                        }
+                    )
                     for folder in folders
                 ]
             }
         )
 
     async def update_one(self, *, pk: UUID, data: FolderUpdateSchema) -> FolderResponseSchema:
-        """Обновляет имя, родителя и полный набор файлов папки."""
+        """Обновляет имя, родителя и полный набор файлов и видео папки."""
         with self._full_access():
             await self.has_one(pk, raise_error=True)
-            values = data.model_dump(exclude={'file_ids'}, exclude_unset=True)
+            values = data.model_dump(exclude={'file_ids', 'video_ids'}, exclude_unset=True)
 
             async with self.transaction.atomic():
                 if values:
                     await self._update_one(pk, values, FolderResponseSchema)
                 if data.file_ids is not None:
                     await self._replace_files(folder_id=pk, file_ids=data.file_ids)
+                if data.video_ids is not None:
+                    await self._replace_videos(folder_id=pk, video_ids=data.video_ids)
 
             return await self.get_one(pk=pk)
 
@@ -240,13 +260,38 @@ class FoldersRepository(SoftBaseRepository):
         )
         return list(await self.transaction.scalars(query))
 
+    async def get_video_ids(self, *, folder_ids: list[UUID]) -> list[UUID]:
+        """id неудалённых видео, лежащих в перечисленных папках."""
+        if not folder_ids:
+            return []
+
+        query = (
+            select(folder_videos.c.video_id)
+            .join(Video, Video.id == folder_videos.c.video_id)
+            .where(folder_videos.c.folder_id.in_(folder_ids), Video.deleted_id.is_(None))
+        )
+        return list(await self.transaction.scalars(query))
+
+    async def attach_video(self, *, folder_id: UUID, video_id: UUID) -> None:
+        """Кладёт видео в папку текущего пользователя (повторная привязка — no-op).
+
+        Папка ищется с фильтром по владельцу, поэтому чужая даёт `404`.
+        """
+        await self.has_one(folder_id, raise_error=True)
+
+        query = pg_insert(folder_videos).values(
+            folder_id=folder_id, video_id=video_id, creator_id=self._owner_id
+        )
+        await self.transaction.execute(query.on_conflict_do_nothing())
+
     async def delete_subtree(self, *, folder_ids: list[UUID]) -> None:
-        """Убирает связи папок с файлами и мягко удаляет все папки ветки."""
+        """Убирает связи папок с файлами и видео и мягко удаляет все папки ветки."""
         if not folder_ids:
             return
 
         async with self.transaction.atomic():
             await self._unlink_files(folder_ids=folder_ids)
+            await self._unlink_videos(folder_ids=folder_ids)
             # все папки ветки помечаются одной записью SoftDel — как в других модулях
             await self._delete_many(folder_ids)
 
@@ -278,6 +323,43 @@ class FoldersRepository(SoftBaseRepository):
     async def _replace_files(self, *, folder_id: UUID, file_ids: list[UUID]) -> None:
         await self._unlink_files(folder_ids=[folder_id])
         await self._add_files(folder_id=folder_id, file_ids=file_ids)
+
+    async def _add_videos(self, *, folder_id: UUID, video_ids: list[UUID]) -> None:
+        """Привязывает видео к папке; creator_id — кто именно это сделал."""
+        values = [
+            {'folder_id': folder_id, 'video_id': video_id, 'creator_id': self._owner_id}
+            for video_id in dict.fromkeys(video_ids)
+        ]
+        if not values:
+            return
+        await self.transaction.execute(insert(folder_videos).values(values))
+
+    async def _unlink_videos(self, *, folder_ids: list[UUID]) -> None:
+        """Убирает связи папок с видео (таблица folder_videos)."""
+        await self.transaction.execute(
+            delete(folder_videos).where(folder_videos.c.folder_id.in_(folder_ids))
+        )
+
+    async def _replace_videos(self, *, folder_id: UUID, video_ids: list[UUID]) -> None:
+        await self._unlink_videos(folder_ids=[folder_id])
+        await self._add_videos(folder_id=folder_id, video_ids=video_ids)
+
+    async def _load_videos(self, *, folder_ids: list[UUID]) -> dict[UUID, list[VideoShortSchema]]:
+        """Загружает видео папок одним запросом; удалённые видео не отдаются."""
+        videos: dict[UUID, list[VideoShortSchema]] = defaultdict(list)
+        if not folder_ids:
+            return videos
+
+        query = (
+            select(folder_videos.c.folder_id, Video)
+            .join(Video, Video.id == folder_videos.c.video_id)
+            .where(folder_videos.c.folder_id.in_(folder_ids), Video.deleted_id.is_(None))
+            .order_by(folder_videos.c.folder_id, Video.name)
+        )
+        result = await self.transaction.execute(query)
+        for folder_id, video in result.all():
+            videos[folder_id].append(VideoShortSchema.model_validate(video, from_attributes=True))
+        return videos
 
     async def _load_files(self, *, folder_ids: list[UUID]) -> dict[UUID, list[FileShortSchema]]:
         """Загружает файлы папок одним запросом; удалённые файлы не отдаются."""
