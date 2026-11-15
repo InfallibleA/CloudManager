@@ -1,0 +1,156 @@
+# Имя проекта зафиксировано, чтобы имена томов и сети не зависели от расположения исходников.
+name: cloud_manager-backend
+
+services:
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: cloud_manager_postgres
+    restart: always
+    env_file:
+      - example.env
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=ru_RU'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - '${POSTGRES_HOST_PORT:-5439}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -d "$$POSTGRES_DB" -U "$$POSTGRES_USER"']
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    networks:
+      - cloud_manager
+
+  # Garage: S3-совместимое хранилище на Rust (AGPLv3, без лицензий).
+  # В образе только бинарник /garage, поэтому layout, бакет и ключ создаются
+  # командами `docker compose exec garage /garage ...` — см. README.
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: cloud_manager_garage
+    restart: always
+    environment:
+      TZ: Europe/Moscow
+    # Порты публикуются для локальной разработки. В продакшене S3 API доступен
+    # браузеру через nginx (/cloudmanager-files/), поэтому наружу порты не открываем.
+    ports:
+      # Порт S3 API на хосте (GARAGE_HOST_PORT) → порт S3 API в контейнере (GARAGE_PORT)
+      - '${GARAGE_HOST_PORT:-3900}:${GARAGE_PORT:-3900}'
+      - '3901:3901'   # RPC между нодами
+      - '3903:3903'   # admin API
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    healthcheck:
+      # В образе только /garage без shell — проверяем штатной командой
+      test: ['CMD', '/garage', 'status']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cloud_manager
+
+  # Миграции: применяются один раз до старта api
+  migrate:
+    image: cloud_manager_app
+    container_name: cloud_manager_migrate
+    build:
+      context: .
+      args:
+        - APP_PORT=${APP_PORT:-8000}
+    command: ['alembic', 'upgrade', 'head']
+    env_file:
+      - example.env
+      - path: .env
+        required: false
+    environment:
+      TZ: Europe/Moscow
+      # Адрес хранилища собирается из GARAGE_HOST/GARAGE_PORT, чтобы порт жил
+      # в одном месте (.env): это значение перекрывает S3_ENDPOINT из env_file
+      S3_ENDPOINT: '${GARAGE_HOST:-garage}:${GARAGE_PORT:-3900}'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cloud_manager
+
+  # Реплики api масштабируются: docker compose up -d --scale api=3.
+  # Наружу порт не публикуется — вход только через nginx.
+  api:
+    image: cloud_manager_app
+    restart: always
+    env_file:
+      - example.env
+      - path: .env
+        required: false
+    environment:
+      TZ: Europe/Moscow
+      APP_PORT: 8000
+      # См. комментарий у сервиса migrate: адрес S3 собирается из GARAGE_HOST/GARAGE_PORT
+      S3_ENDPOINT: '${GARAGE_HOST:-garage}:${GARAGE_PORT:-3900}'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - cloud_manager
+
+  # Единая точка входа: nginx балансирует нагрузку между репликами api
+  # (docker compose up -d --scale api=N) и проксирует файлы на Garage.
+  # Конфиг — nginx/default.conf.template (там же место для домена и TLS),
+  # в него подставляются переменные окружения ниже.
+  nginx:
+    image: cloud_manager_nginx
+    container_name: cloud_manager_nginx
+    restart: always
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    environment:
+      TZ: Europe/Moscow
+      # Адрес S3 API для прокси /cloudmanager-files/ — подставляется в шаблон
+      # nginx/default.conf.template штатным envsubst-ом образа
+      GARAGE_HOST: ${GARAGE_HOST:-garage}
+      GARAGE_PORT: ${GARAGE_PORT:-3900}
+    depends_on:
+      api:
+        condition: service_healthy
+      # Прокси /cloudmanager-files/ идёт в garage: шлюз стартует только после
+      # того, как хранилище поднялось (иначе nginx не найдёт имя в DNS).
+      garage:
+        condition: service_healthy
+    ports:
+      - '${GATEWAY_PORT:-80}:80'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - cloud_manager
+
+volumes:
+  postgres_data:
+  garage_meta:
+  garage_data:
+
+networks:
+  cloud_manager:
+    driver: bridge

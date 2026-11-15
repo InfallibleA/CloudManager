@@ -1,0 +1,82 @@
+# Docker-встроенный DNS (127.0.0.11): имя api переразрешается на лету, поэтому
+# nginx видит новые реплики после `docker compose up -d --scale api=N`.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+# Балансировка нагрузки между всеми репликами сервиса api.
+upstream api_upstream {
+    zone api_upstream 64k;
+    least_conn;
+    server api:8000 resolve;
+}
+
+# --- Ограничение частоты запросов (rate limiting) по IP клиента ---
+# Зоны живут в разделяемой памяти nginx, а шлюз один на все реплики api,
+# поэтому лимит единый для всего backend (in-memory лимитер в приложении
+# при нескольких репликах работал бы некорректно).
+limit_req_zone $binary_remote_addr zone=api_all:10m rate=30r/s;
+limit_req_zone $binary_remote_addr zone=auth_public:10m rate=10r/m;
+limit_req_status 429;
+
+# Если шлюз стоит за внешним балансировщиком — включите real_ip, иначе
+# $binary_remote_addr будет адресом прокси и лимит схлопнется на всех клиентов.
+# set_real_ip_from 10.0.0.0/8;
+# real_ip_header X-Forwarded-For;
+
+server {
+    listen 80;
+    server_name _;
+
+    # Максимальный размер загружаемого файла (VIDEO_MAX_SIZE_MB=2048)
+    client_max_body_size 2048m;
+
+    # Единый формат ответа при превышении лимита
+    error_page 429 = @too_many_requests;
+
+    location @too_many_requests {
+        default_type application/json;
+        return 429 '{"error":"TooManyRequests","detail":"Слишком много запросов. Попробуйте позже."}';
+    }
+
+    # Liveness самого nginx — используется в healthcheck compose.
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    # Presigned-ссылки на файлы и видео: браузер идёт на тот же origin, путь
+    # /cloudmanager-files/ совпадает с именем бакета, иначе подпись не сойдётся.
+    # Адрес хранилища берётся из окружения (GARAGE_HOST/GARAGE_PORT, см. .env):
+    # файл — шаблон, образ nginx сам подставляет значения через envsubst.
+    # Переменная вместо литерала нужна ещё и потому, что так имя garage
+    # резолвится на каждом запросе через resolver (127.0.0.11): если хранилище ещё
+    # не поднялось или перезапускается, nginx отдаёт 502, а не падает на старте с
+    # `[emerg] host not found in upstream` (с литералом имя резолвится один раз
+    # при запуске и при неудаче уходит в crash-loop).
+    location /cloudmanager-files/ {
+        set $garage_s3 ${GARAGE_HOST}:${GARAGE_PORT};
+        proxy_pass http://$garage_s3;
+        proxy_set_header Host $http_host;
+        proxy_force_ranges on;
+        proxy_buffering off;
+    }
+
+    # Публичные ручки записи: жёсткий лимит, чтобы не спамили регистрацией.
+    location = /api/auth/register {
+        limit_req zone=auth_public burst=5 nodelay;
+        proxy_pass http://api_upstream;
+        include /etc/nginx/proxy_params.conf;
+    }
+
+    location = /api/auth/login {
+        limit_req zone=auth_public burst=5 nodelay;
+        proxy_pass http://api_upstream;
+        include /etc/nginx/proxy_params.conf;
+    }
+
+    # Всё остальное (/api, /health, /docs, /openapi.json) — на реплики api.
+    location / {
+        limit_req zone=api_all burst=60 nodelay;
+        proxy_pass http://api_upstream;
+        include /etc/nginx/proxy_params.conf;
+    }
+}

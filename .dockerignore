@@ -1,0 +1,21 @@
+# Файлы, которые не нужны в образе
+
+.git
+.gitignore
+.github
+.vscode
+.venv
+.venv*
+.idea
+
+__pycache__
+*.py[cod]
+.ruff_cache
+.pytest_cache
+.mypy_cache
+
+.env
+*.env.local
+logs/
+tests/
+docs/
