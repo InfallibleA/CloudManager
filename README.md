@@ -1,14 +1,15 @@
-# cloud_manager-backend
+# CloudManager
 
-Бэкенд сайта-визитки **cloud_manager** на FastAPI: JWT-авторизация, пользователи, контент витрины и health-пробы.
+Backend-сервис облачного хранилища и управления контентом на **FastAPI**: JWT-авторизация с ролями и блокировкой пользователей, хранение файлов и иерархических папок в PostgreSQL + S3 (Garage), стриминг видео, новостная витрина и health-пробы.
 
 ## Стек
 
 | Слой | Технология |
 |---|---|
-| Язык | Python 3.14 |
+| Язык | Python 3.14+ |
+| Зависимости | uv (`pyproject.toml`, `uv.lock`) |
 | Web | FastAPI + Uvicorn |
-| БД | PostgreSQL 17, SQLAlchemy 2.0 (async) + asyncpg, Alembic |
+| БД | PostgreSQL 17, SQLAlchemy 2 (`[asyncio]`) + asyncpg, Alembic |
 | Файлы | Garage — S3-совместимое хранилище |
 | DI | Dishka (`dishka.integrations.fastapi`) |
 | Конфиг | pydantic-settings (`app/config.py`) |
@@ -19,14 +20,14 @@
 ```
 app/
 ├── auth/           # регистрация, логин, JWT, текущий пользователь, список пользователей
-│   ├── endpoint/   # POST /api/auth/register, /login, GET /me, /users
+│   ├── endpoint/   # POST /api/auth/register, /login, GET /me, /users, POST /users/{id}/block, /unblock
 │   ├── schema/     # схемы запросов/ответов
 │   ├── service/    # бизнес-логика аутентификации
 │   ├── dependencies.py, provider.py, security.py
 ├── users/          # модель, репозиторий, сервис, схемы пользователей
 │   └── cli.py      # создание администратора из консоли
 ├── files/          # файлы: S3-хранилище, модель, репозиторий, сервис
-│   ├── endpoint/   # POST /api/files, GET /api/files, GET .../download и .../image (без авторизации), DELETE
+│   ├── endpoint/   # POST/GET /api/files, GET /types, .../download, .../image, PATCH/DELETE /{id}
 │   ├── model/      # таблица files: имя, тип, object_key, размер
 │   ├── repository/ # запросы к БД и мягкое удаление
 │   ├── schema/     # схемы запроса, ответа и фильтров
@@ -66,8 +67,11 @@ app/
 ├── di.py           # сборка Dishka-контейнера
 ├── main.py         # точка входа и ASGI-приложение
 └── routers.py      # корневой роутер
+docs/
+└── api.md          # подробная спецификация HTTP API
 migration/          # Alembic (env.py, versions/)
 tests/              # pytest (asyncio_mode = auto)
+AGENT.md            # инструкции и правила для AI-ассистента
 ```
 
 ## Быстрый старт (Docker)
@@ -98,6 +102,8 @@ uv run uvicorn app.main:app --reload
 ```
 
 ## API
+
+Подробная спецификация с описанием всех схем, параметров и фильтров находится в [docs/api.md](docs/api.md).
 
 | Метод | Путь | Назначение |
 |---|---|---|
