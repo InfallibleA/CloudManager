@@ -205,24 +205,60 @@ async def test_types_endpoint_lists_allowed_types(client_without_token: AsyncCli
     ]
 
 
-async def test_upload_requires_admin(
+async def test_upload_available_to_any_authenticated_user(
     client_as_client: AsyncClient, client_without_token: AsyncClient
 ):
-    assert (await upload_video(client_as_client)).status_code == 403
+    assert (await upload_video(client_as_client)).status_code == 201
     assert (await upload_video(client_without_token)).status_code == 401
 
 
-async def test_delete_requires_admin(
+async def test_delete_own_video(
+    client_as_client: AsyncClient,
+    fake_storage: FakeFileStorage,
+):
+    uploaded = await upload_video(client_as_client, name='Своё')
+
+    response = await client_as_client.delete(f'/api/videos/{uploaded.json()["id"]}')
+
+    assert response.status_code == 204
+    assert fake_storage.objects == {}
+
+
+async def test_delete_foreign_video_is_forbidden(
     client_as_client: AsyncClient,
     fake_storage: FakeFileStorage,
     fake_videos_repository: FakeVideosRepository,
 ):
-    video = await seed_video(fake_videos_repository, fake_storage, name='Демо')
+    video = await seed_video(
+        fake_videos_repository, fake_storage, name='Чужое', creator_id=uuid4()
+    )
 
     response = await client_as_client.delete(f'/api/videos/{video.id}')
 
     assert response.status_code == 403
+    assert response.json()['detail'] == 'Можно удалять только свои видео.'
     assert video.object_key in fake_storage.objects
+
+
+async def test_admin_deletes_foreign_video(
+    client: AsyncClient,
+    fake_storage: FakeFileStorage,
+    fake_videos_repository: FakeVideosRepository,
+):
+    video = await seed_video(
+        fake_videos_repository, fake_storage, name='Чужое', creator_id=uuid4()
+    )
+
+    response = await client.delete(f'/api/videos/{video.id}')
+
+    assert response.status_code == 204
+    assert video.object_key not in fake_storage.objects
+
+
+async def test_delete_requires_auth(client_without_token: AsyncClient):
+    response = await client_without_token.delete(f'/api/videos/{uuid4()}')
+
+    assert response.status_code == 401
 
 
 async def test_read_endpoints_are_public(

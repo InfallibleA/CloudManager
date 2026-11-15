@@ -302,8 +302,15 @@ class FakeVideosRepository(VideosRepository):
 
     def __init__(self) -> None:
         self.items: dict[UUID, VideoResponseSchema] = {}
+        self.creators: dict[UUID, UUID | None] = {}
+        # в реальном репозитории creator_id берётся из контекста запроса
+        self._owner: UUID | None = None
         # Имитация гонки: имя свободно при проверке, но занято при вставке
         self.conflict_on_create = False
+
+    def use_owner(self, *, owner_id: UUID | None) -> None:
+        """Кто считается создателем новых видео — как creator_id из контекста."""
+        self._owner = owner_id
 
     async def create_one(self, *, data: VideoCreateSchema) -> VideoResponseSchema:
         if self.conflict_on_create:
@@ -317,6 +324,7 @@ class FakeVideosRepository(VideosRepository):
             created_at=datetime.now(timezone.utc),
         )
         self.items[video.id] = video
+        self.creators[video.id] = self._owner
         return video
 
     async def get_one(self, *, pk: UUID) -> VideoResponseSchema:
@@ -359,9 +367,16 @@ class FakeVideosRepository(VideosRepository):
             data=items[offset : offset + paginator.page_size],
         )
 
+    async def get_creator_id(self, *, pk: UUID) -> UUID:
+        """id создателя видео — как creator_id в таблице videos."""
+        if pk not in self.items:
+            raise ObjectNotFoundException(object_id=pk, object_class=Video)
+        return self.creators.get(pk)
+
     async def delete_one(self, *, pk: UUID) -> VideoResponseSchema:
         video = await self.get_one(pk=pk)
         del self.items[pk]
+        self.creators.pop(pk, None)
         return video
 
 
@@ -372,13 +387,17 @@ async def seed_video(
     name: str = 'Видео',
     video_type: EVideoType = EVideoType.MP4,
     data: bytes = b'video-data',
+    creator_id: UUID | None = None,
 ) -> VideoResponseSchema:
     """Кладёт видео в подменённые хранилище и БД — как будто его загрузил админ."""
     object_key = f'videos/{uuid4().hex}.{video_type.value}'
     storage.objects[object_key] = data
-    return await repository.create_one(
+    video = await repository.create_one(
         data=VideoCreateSchema(name=name, object_key=object_key, type=video_type, size=len(data))
     )
+    if creator_id is not None:
+        repository.creators[video.id] = creator_id
+    return video
 
 
 class FakeNewsRepository(NewsRepository):

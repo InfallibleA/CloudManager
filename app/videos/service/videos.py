@@ -8,10 +8,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.core.dependencies import Paginator
-from app.core.enums import EVideoType
-from app.core.exceptions import UniqueConstraintException, ValidationException
+from app.core.enums import EUserRole, EVideoType
+from app.core.exceptions import ForbiddenException, UniqueConstraintException, ValidationException
 from app.core.schemes import PaginatedSchema
 from app.files.storage import FileStorage
+from app.users.schema.users import UserResponseSchema
 from app.videos.constants import VIDEO_TYPES_HINT, content_type_for, video_type_by_extension
 from app.videos.repository.videos import VideosRepository
 from app.videos.schema.videos import (
@@ -105,10 +106,21 @@ class VideosService:
             expires_in=self._presign_ttl,
         )
 
-    async def delete(self, *, pk: UUID) -> None:
-        """Удаляет запись и объект из хранилища."""
+    async def delete(self, *, pk: UUID, user: UserResponseSchema) -> None:
+        """Удаляет запись и объект из хранилища: админ — любое, пользователь — только своё."""
+        await self._ensure_can_modify(pk=pk, user=user)
         video = await self._videos_repository.delete_one(pk=pk)
         await self._file_storage.remove(object_id=video.object_key)
+
+    async def _ensure_can_modify(self, *, pk: UUID, user: UserResponseSchema) -> None:
+        """Проверяет право удалять видео: админ — любое, остальные — только своё.
+
+        Чужое видео даёт `403` (а не `404`), потому что видео и так доступны по id.
+        Несуществующее видео даёт `404` из репозитория — до проверки прав.
+        """
+        creator_id = await self._videos_repository.get_creator_id(pk=pk)
+        if user.role is not EUserRole.ADMIN and creator_id != user.id:
+            raise ForbiddenException(detail='Можно удалять только свои видео.')
 
     @staticmethod
     def _resolve_video_type(filename: str | None) -> EVideoType:

@@ -1,5 +1,7 @@
 from uuid import UUID
 
+from sqlalchemy import select
+
 from app.core.context import Context
 from app.core.dependencies import Paginator
 from app.core.engines.database import Transaction
@@ -52,6 +54,18 @@ class VideosRepository(SoftBaseRepository):
             paginator=paginator,
             transform_query=lambda query: query.order_by(db_model.created_at.desc()),
         )
+
+    async def get_creator_id(self, *, pk: UUID) -> UUID:
+        """id создателя видео: по нему проверяется право на удаление.
+
+        Неудалённого видео нет — 404, как и при удалении.
+        """
+        db_model = self._model_class
+        query = select(db_model.creator_id).where(db_model.id == pk, db_model.deleted_id.is_(None))
+        creator_id = (await self.transaction.execute(query)).scalar_one_or_none()
+        if creator_id is None:
+            raise ObjectNotFoundException(object_id=pk, object_class=db_model)
+        return creator_id
 
     async def delete_one(self, *, pk: UUID) -> VideoResponseSchema:
         """Мягко удаляет видео и возвращает его данные для удаления объекта из S3."""

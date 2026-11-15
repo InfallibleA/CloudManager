@@ -171,6 +171,8 @@ class TestProvider(Provider):
         # фейк папок: владельцем папок тоже становится пользователь запроса
         self._folders_repository.use_owner(owner_id=self._user.id)
         self._folders_repository.use_admin(is_admin=self._user.role is EUserRole.ADMIN)
+        # фейк видео: автором загруженного видео становится текущий пользователь
+        self._videos_repository.use_owner(owner_id=self._user.id)
         return self._user
 
     @provide(scope=Scope.REQUEST)
