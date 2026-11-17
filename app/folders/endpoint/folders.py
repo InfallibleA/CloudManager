@@ -35,7 +35,7 @@ async def create_folder(
     user: FromDishka[UserResponseSchema],
     data: FolderCreateSchema,
 ) -> FolderResponseSchema:
-    """Создаёт папку: `parent_id` делает её вложенной, `file_ids` сразу кладёт файлы."""
+    """Создаёт папку: `parent_id` делает её вложенной, а *_ids сразу кладут содержимое."""
     return await folders_service.create(data=data)
 
 
@@ -83,7 +83,7 @@ async def update_folder(
     folders_service: FromDishka[FoldersService],
     user: FromDishka[UserResponseSchema],
 ) -> FolderResponseSchema:
-    """`file_ids` — полный новый набор файлов, `parent_id: null` переносит папку в корень."""
+    """`*_ids` — полные новые наборы содержимого, `parent_id: null` переносит папку в корень."""
     return await folders_service.update(pk=folder_id, data=data)
 
 

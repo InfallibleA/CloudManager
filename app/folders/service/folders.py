@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from app.audios.service.audios import AudiosService
 from app.core.dependencies import Paginator
 from app.core.exceptions import ValidationException
 from app.core.schemes import PaginatedSchema
@@ -15,7 +16,7 @@ from app.videos.service.videos import VideosService
 
 
 class FoldersService:
-    """Папки пользователя: вложенность, файлы и видео внутри, каскадное удаление ветки."""
+    """Папки пользователя: вложенность, файлы, видео и аудио внутри, каскадное удаление ветки."""
 
     def __init__(
         self,
@@ -23,17 +24,26 @@ class FoldersService:
         folders_repository: FoldersRepository,
         files_service: FilesService,
         videos_service: VideosService,
+        audios_service: AudiosService,
     ):
         self._folders_repository = folders_repository
         self._files_service = files_service
         self._videos_service = videos_service
+        self._audios_service = audios_service
 
     async def create(self, *, data: FolderCreateSchema) -> FolderResponseSchema:
         # Без parent_id папка создаётся внутри корневой — от неё строится дерево
         parent_id = data.parent_id or await self._root_id()
         await self._validate_parent(parent_id=parent_id)
-        await self._validate_files(file_ids=data.file_ids)
-        await self._validate_videos(video_ids=data.video_ids)
+        await self._validate_items(
+            item_ids=data.file_ids, fetcher=self._files_service.get_many, label='Файлы'
+        )
+        await self._validate_items(
+            item_ids=data.video_ids, fetcher=self._videos_service.get_many, label='Видео'
+        )
+        await self._validate_items(
+            item_ids=data.audio_ids, fetcher=self._audios_service.get_many, label='Аудио'
+        )
         return await self._folders_repository.create_one(
             data=data.model_copy(update={'parent_id': parent_id})
         )
@@ -58,15 +68,23 @@ class FoldersService:
             await self._validate_move(pk=pk, parent_id=parent_id, owner_id=owner_id)
             data = data.model_copy(update={'parent_id': parent_id})
         if data.file_ids is not None:
-            await self._validate_files(file_ids=data.file_ids)
+            await self._validate_items(
+                item_ids=data.file_ids, fetcher=self._files_service.get_many, label='Файлы'
+            )
         if data.video_ids is not None:
-            await self._validate_videos(video_ids=data.video_ids)
+            await self._validate_items(
+                item_ids=data.video_ids, fetcher=self._videos_service.get_many, label='Видео'
+            )
+        if data.audio_ids is not None:
+            await self._validate_items(
+                item_ids=data.audio_ids, fetcher=self._audios_service.get_many, label='Аудио'
+            )
         return await self._folders_repository.update_one(pk=pk, data=data)
 
     async def delete(self, *, pk: UUID) -> None:
-        """Удаляет папку со всеми подпапками, файлами и видео внутри.
+        """Удаляет папку со всеми подпапками, файлами, видео и аудио внутри.
 
-        Сначала мягко удаляются сами файлы и видео (и их объекты уходят из
+        Сначала мягко удаляются сами файлы, видео и аудио (и их объекты уходят из
         S3-хранилища), затем — папки ветки: файлы не остаются «висячими»
         в удалённой папке. Корневую папку удалить нельзя — иначе у пользователя
         не останется места, куда класть папки и файлы. Админ может удалить чужую
@@ -78,8 +96,10 @@ class FoldersService:
         folder_ids = await self._folders_repository.get_subtree_ids(pk=pk)
         file_ids = await self._folders_repository.get_file_ids(folder_ids=folder_ids)
         video_ids = await self._folders_repository.get_video_ids(folder_ids=folder_ids)
+        audio_ids = await self._folders_repository.get_audio_ids(folder_ids=folder_ids)
         await self._files_service.delete_many(pks=file_ids)
         await self._videos_service.delete_many(pks=video_ids)
+        await self._audios_service.delete_many(pks=audio_ids)
         await self._folders_repository.delete_subtree(folder_ids=folder_ids)
 
     async def _root_id(self, *, owner_id: UUID | None = None) -> UUID | None:
@@ -112,24 +132,14 @@ class FoldersService:
         if not await self._folders_repository.has_folder(pk=parent_id, owner_id=owner_id):
             raise ValidationException(detail=f'Папка не найдена: {parent_id}.')
 
-    async def _validate_files(self, *, file_ids: list[UUID]) -> None:
-        """Проверяет, что все указанные файлы есть в базе и не удалены."""
-        if not file_ids:
+    @staticmethod
+    async def _validate_items(*, item_ids: list[UUID], fetcher, label: str) -> None:
+        """Проверяет, что все указанные элементы есть в базе и не удалены."""
+        if not item_ids:
             return
 
-        found = await self._files_service.get_many(pks=file_ids)
-        missing = set(file_ids) - {file.id for file in found}
+        found = await fetcher(pks=item_ids)
+        missing = set(item_ids) - {item.id for item in found}
         if missing:
-            missing_ids = ', '.join(str(file_id) for file_id in sorted(missing))
-            raise ValidationException(detail=f'Файлы не найдены: {missing_ids}.')
-
-    async def _validate_videos(self, *, video_ids: list[UUID]) -> None:
-        """Проверяет, что все указанные видео есть в базе и не удалены."""
-        if not video_ids:
-            return
-
-        found = await self._videos_service.get_many(pks=video_ids)
-        missing = set(video_ids) - {video.id for video in found}
-        if missing:
-            missing_ids = ', '.join(str(video_id) for video_id in sorted(missing))
-            raise ValidationException(detail=f'Видео не найдены: {missing_ids}.')
+            missing_ids = ', '.join(str(item_id) for item_id in sorted(missing))
+            raise ValidationException(detail=f'{label} не найдены: {missing_ids}.')

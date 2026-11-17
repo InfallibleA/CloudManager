@@ -10,6 +10,8 @@ from dishka.integrations.fastapi import setup_dishka
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from app.audios.repository.audios import AudiosRepository
+from app.audios.service.audios import AudiosService
 from app.auth.service.auth import AuthService
 from app.config import Settings
 from app.core.enums import EUserRole
@@ -29,6 +31,7 @@ from app.users.service.users import UsersService
 from app.videos.repository.videos import VideosRepository
 from app.videos.service.videos import VideosService
 from tests.fakes import (
+    FakeAudiosRepository,
     FakeFilesRepository,
     FakeFileStorage,
     FakeFoldersRepository,
@@ -66,6 +69,8 @@ def build_test_settings(**overrides: Any) -> Settings:
         FILE_MAX_SIZE_MB=1,
         VIDEO_MAX_SIZE_MB=1,
         VIDEO_PRESIGN_TTL_SECONDS=3600,
+        AUDIO_MAX_SIZE_MB=1,
+        AUDIO_PRESIGN_TTL_SECONDS=3600,
         **overrides,
     )
 
@@ -85,6 +90,7 @@ class TestProvider(Provider):
         folders_repository: FakeFoldersRepository,
         news_repository: NewsRepository,
         videos_repository: VideosRepository,
+        audios_repository: AudiosRepository,
         users_repository: UsersRepository,
         user: UserResponseSchema | None,
     ):
@@ -94,6 +100,7 @@ class TestProvider(Provider):
         self._folders_repository = folders_repository
         self._news_repository = news_repository
         self._videos_repository = videos_repository
+        self._audios_repository = audios_repository
         self._users_repository = users_repository
         self._user = user
 
@@ -129,11 +136,13 @@ class TestProvider(Provider):
         folders_repository: FoldersRepository,
         files_service: FilesService,
         videos_service: VideosService,
+        audios_service: AudiosService,
     ) -> FoldersService:
         return FoldersService(
             folders_repository=folders_repository,
             files_service=files_service,
             videos_service=videos_service,
+            audios_service=audios_service,
         )
 
     @provide(scope=Scope.REQUEST)
@@ -178,7 +187,28 @@ class TestProvider(Provider):
         self._folders_repository.use_admin(is_admin=self._user.role is EUserRole.ADMIN)
         # фейк видео: автором загруженного видео становится текущий пользователь
         self._videos_repository.use_owner(owner_id=self._user.id)
+        # фейк аудио: автором загруженного аудио становится текущий пользователь
+        self._audios_repository.use_owner(owner_id=self._user.id)
         return self._user
+
+    @provide(scope=Scope.REQUEST)
+    def get_audios_repository(self) -> AudiosRepository:
+        return self._audios_repository
+
+    @provide(scope=Scope.REQUEST)
+    def get_audios_service(
+        self,
+        audios_repository: AudiosRepository,
+        folders_repository: FoldersRepository,
+        file_storage: FileStorage,
+        config: Settings,
+    ) -> AudiosService:
+        return AudiosService(
+            audios_repository=audios_repository,
+            folders_repository=folders_repository,
+            file_storage=file_storage,
+            config=config,
+        )
 
     @provide(scope=Scope.REQUEST)
     def get_videos_repository(self) -> VideosRepository:
@@ -216,10 +246,14 @@ def fake_repository() -> FakeFilesRepository:
 
 @pytest.fixture
 def fake_folders_repository(
-    fake_repository: FakeFilesRepository, fake_videos_repository: FakeVideosRepository
+    fake_repository: FakeFilesRepository,
+    fake_videos_repository: FakeVideosRepository,
+    fake_audios_repository: FakeAudiosRepository,
 ) -> FakeFoldersRepository:
     return FakeFoldersRepository(
-        files_repository=fake_repository, videos_repository=fake_videos_repository
+        files_repository=fake_repository,
+        videos_repository=fake_videos_repository,
+        audios_repository=fake_audios_repository,
     )
 
 
@@ -231,6 +265,11 @@ def fake_news_repository(fake_repository: FakeFilesRepository) -> FakeNewsReposi
 @pytest.fixture
 def fake_videos_repository() -> FakeVideosRepository:
     return FakeVideosRepository()
+
+
+@pytest.fixture
+def fake_audios_repository() -> FakeAudiosRepository:
+    return FakeAudiosRepository()
 
 
 @pytest.fixture
@@ -267,6 +306,7 @@ async def build_client(
     folders_repository: FakeFoldersRepository,
     news_repository: NewsRepository,
     videos_repository: VideosRepository,
+    audios_repository: AudiosRepository,
     users_repository: UsersRepository,
 ) -> AsyncIterator[AsyncClient]:
     """Поднимает приложение с подменёнными зависимостями и текущим пользователем."""
@@ -277,6 +317,7 @@ async def build_client(
             folders_repository=folders_repository,
             news_repository=news_repository,
             videos_repository=videos_repository,
+            audios_repository=audios_repository,
             users_repository=users_repository,
             user=user,
         )
@@ -302,6 +343,7 @@ async def client(
     fake_folders_repository: FakeFoldersRepository,
     fake_news_repository: FakeNewsRepository,
     fake_videos_repository: FakeVideosRepository,
+    fake_audios_repository: FakeAudiosRepository,
     fake_users_repository: FakeUsersRepository,
     admin_user: UserResponseSchema,
 ) -> AsyncIterator[AsyncClient]:
@@ -313,6 +355,7 @@ async def client(
         folders_repository=fake_folders_repository,
         news_repository=fake_news_repository,
         videos_repository=fake_videos_repository,
+        audios_repository=fake_audios_repository,
         users_repository=fake_users_repository,
     ) as http_client:
         yield http_client
@@ -325,6 +368,7 @@ async def client_as_client(
     fake_folders_repository: FakeFoldersRepository,
     fake_news_repository: FakeNewsRepository,
     fake_videos_repository: FakeVideosRepository,
+    fake_audios_repository: FakeAudiosRepository,
     fake_users_repository: FakeUsersRepository,
     client_user: UserResponseSchema,
 ) -> AsyncIterator[AsyncClient]:
@@ -336,6 +380,7 @@ async def client_as_client(
         folders_repository=fake_folders_repository,
         news_repository=fake_news_repository,
         videos_repository=fake_videos_repository,
+        audios_repository=fake_audios_repository,
         users_repository=fake_users_repository,
     ) as http_client:
         yield http_client
@@ -348,6 +393,7 @@ async def client_without_token(
     fake_folders_repository: FakeFoldersRepository,
     fake_news_repository: FakeNewsRepository,
     fake_videos_repository: FakeVideosRepository,
+    fake_audios_repository: FakeAudiosRepository,
     fake_users_repository: FakeUsersRepository,
 ) -> AsyncIterator[AsyncClient]:
     """Клиент API без токена: запросы к защищённым ручкам получают 401."""
@@ -358,6 +404,7 @@ async def client_without_token(
         folders_repository=fake_folders_repository,
         news_repository=fake_news_repository,
         videos_repository=fake_videos_repository,
+        audios_repository=fake_audios_repository,
         users_repository=fake_users_repository,
     ) as http_client:
         yield http_client

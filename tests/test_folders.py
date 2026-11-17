@@ -6,10 +6,12 @@ from httpx import AsyncClient
 from app.routers import router
 from tests.conftest import ADMIN_USER_ID, CLIENT_USER_ID
 from tests.fakes import (
+    FakeAudiosRepository,
     FakeFilesRepository,
     FakeFileStorage,
     FakeFoldersRepository,
     FakeVideosRepository,
+    seed_audio,
     seed_file,
     seed_folder,
     seed_video,
@@ -23,12 +25,14 @@ async def create_folder(
     parent_id=None,
     file_ids: list | None = None,
     video_ids: list | None = None,
+    audio_ids: list | None = None,
 ):
     """Создаёт папку через REST так же, как это делает фронтенд."""
     payload: dict = {
         'name': name,
         'file_ids': [str(file_id) for file_id in file_ids or []],
         'video_ids': [str(video_id) for video_id in video_ids or []],
+        'audio_ids': [str(audio_id) for audio_id in audio_ids or []],
     }
     if parent_id is not None:
         payload['parent_id'] = str(parent_id)
@@ -469,6 +473,97 @@ async def test_video_deleted_from_videos_module_leaves_folder(
     await client.delete(f'/api/videos/{video.id}')
 
     assert (await client.get(f'/api/folders/{folder_id}')).json()['videos'] == []
+
+
+async def test_folder_content_includes_audios(
+    client: AsyncClient,
+    fake_repository: FakeFilesRepository,
+    fake_audios_repository: FakeAudiosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Содержимое папки отдаёт аудио рядом с файлами — отдельным списком `audios`."""
+    file = await seed_file(fake_repository, fake_storage, name='Договор')
+    audio = await seed_audio(fake_audios_repository, fake_storage, name='Подкаст')
+    folder_id = (
+        await create_folder(client, file_ids=[file.id], audio_ids=[audio.id])
+    ).json()['id']
+
+    body = (await client.get(f'/api/folders/{folder_id}')).json()
+
+    assert [item['name'] for item in body['files']] == ['Договор']
+    assert [item['name'] for item in body['audios']] == ['Подкаст']
+    assert body['audios'][0]['id'] == str(audio.id)
+    assert body['audios'][0]['type'] == 'mp3'
+    assert body['audios'][0]['size'] == len(b'audio-data')
+    assert body['audios'][0]['created_at']
+
+
+async def test_audio_link_records_current_user(
+    client: AsyncClient,
+    fake_audios_repository: FakeAudiosRepository,
+    fake_folders_repository: FakeFoldersRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Связь папки с аудио знает, кто именно положил аудио в папку."""
+    audio = await seed_audio(fake_audios_repository, fake_storage, name='Подкаст')
+
+    folder_id = (await create_folder(client, audio_ids=[audio.id])).json()['id']
+
+    assert fake_folders_repository.audio_creators[(UUID(folder_id), audio.id)] == ADMIN_USER_ID
+
+
+async def test_update_replaces_audios(
+    client: AsyncClient,
+    fake_audios_repository: FakeAudiosRepository,
+    fake_storage: FakeFileStorage,
+):
+    first = await seed_audio(fake_audios_repository, fake_storage, name='Первый')
+    second = await seed_audio(fake_audios_repository, fake_storage, name='Второй')
+    folder_id = (await create_folder(client, audio_ids=[first.id])).json()['id']
+
+    body = (
+        await client.patch(f'/api/folders/{folder_id}', json={'audio_ids': [str(second.id)]})
+    ).json()
+
+    assert [item['name'] for item in body['audios']] == ['Второй']
+
+
+async def test_create_rejects_unknown_audio(client: AsyncClient):
+    response = await create_folder(client, audio_ids=[uuid4()])
+
+    assert response.status_code == 400
+    assert 'Аудио не найдены' in response.json()['detail']
+
+
+async def test_delete_removes_folder_with_audios(
+    client: AsyncClient,
+    fake_audios_repository: FakeAudiosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Удаление папки уносит аудио внутри — включая объекты из хранилища."""
+    audio = await seed_audio(fake_audios_repository, fake_storage, name='Подкаст')
+    folder_id = (await create_folder(client, audio_ids=[audio.id])).json()['id']
+
+    response = await client.delete(f'/api/folders/{folder_id}')
+
+    assert response.status_code == 204
+    assert fake_audios_repository.items == {}
+    assert fake_storage.objects == {}
+    assert (await client.get(f'/api/audios/{audio.id}')).status_code == 404
+
+
+async def test_audio_deleted_from_audios_module_leaves_folder(
+    client: AsyncClient,
+    fake_audios_repository: FakeAudiosRepository,
+    fake_storage: FakeFileStorage,
+):
+    """Аудио, удалённое через /api/audios, исчезает и из выдачи папки."""
+    audio = await seed_audio(fake_audios_repository, fake_storage, name='Подкаст')
+    folder_id = (await create_folder(client, audio_ids=[audio.id])).json()['id']
+
+    await client.delete(f'/api/audios/{audio.id}')
+
+    assert (await client.get(f'/api/folders/{folder_id}')).json()['audios'] == []
 
 
 async def test_admin_has_full_access_to_foreign_folder(

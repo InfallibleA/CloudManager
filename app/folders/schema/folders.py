@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from app.audios.schema.audios import AudioShortSchema
 from app.core.schemes.base import CloudManagerBaseModel
 from app.files.schema.files import FileShortSchema
 from app.videos.schema.videos import VideoShortSchema
@@ -18,6 +19,8 @@ class FolderCreateSchema(CloudManagerBaseModel):
     """Файлы, которые сразу кладутся в папку."""
     video_ids: list[UUID] = Field(default_factory=list)
     """Видео, которые сразу кладутся в папку."""
+    audio_ids: list[UUID] = Field(default_factory=list)
+    """Аудио, которые сразу кладутся в папку."""
 
 
 class FolderCreateInternalSchema(CloudManagerBaseModel):
@@ -42,6 +45,8 @@ class FolderUpdateSchema(CloudManagerBaseModel):
     """Полный новый набор файлов папки: отсутствие поля — не меняет связи."""
     video_ids: list[UUID] | None = None
     """Полный новый набор видео папки: отсутствие поля — не меняет связи."""
+    audio_ids: list[UUID] | None = None
+    """Полный новый набор аудио папки: отсутствие поля — не меняет связи."""
 
 
 class FolderFilterSchema(CloudManagerBaseModel):
@@ -66,7 +71,7 @@ class FolderShortSchema(CloudManagerBaseModel):
 
 
 class FolderResponseSchema(CloudManagerBaseModel):
-    """Публичное представление папки вместе с её файлами, видео и подпапками."""
+    """Публичное представление папки вместе с её файлами, видео, аудио и подпапками."""
 
     id: UUID
     name: str
@@ -76,4 +81,5 @@ class FolderResponseSchema(CloudManagerBaseModel):
     created_at: datetime
     files: list[FileShortSchema] = Field(default_factory=list)
     videos: list[VideoShortSchema] = Field(default_factory=list)
+    audios: list[AudioShortSchema] = Field(default_factory=list)
     children: list[FolderShortSchema] = Field(default_factory=list)

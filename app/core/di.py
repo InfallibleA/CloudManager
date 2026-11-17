@@ -5,6 +5,7 @@ from dishka.integrations.fastapi import FastapiProvider
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.audios.provider import AudiosProvider
 from app.auth.provider import AuthProvider
 from app.auth.service.auth import AuthService
 from app.config import Settings, settings
@@ -75,6 +76,7 @@ def build_dishka_container():
         AppProvider(),
         RequestProvider(),
         AuthProvider(),
+        AudiosProvider(),
         FilesProvider(),
         FoldersProvider(),
         NewsProvider(),

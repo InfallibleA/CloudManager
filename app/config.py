@@ -3,7 +3,7 @@ from ipaddress import IPv4Address
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import AnyUrl, PostgresDsn, field_validator, model_validator
+from pydantic import AnyUrl, PostgresDsn, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.definitions import ENV_FILE
@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     VIDEO_MAX_SIZE_MB: int = 2048
     VIDEO_PRESIGN_TTL_SECONDS: int = 21600
 
+    # Аудио: предел размера файла и время жизни presigned-ссылки на воспроизведение
+    AUDIO_MAX_SIZE_MB: int = 500
+    AUDIO_PRESIGN_TTL_SECONDS: int = 21600
+
     # CORS: домены сайта и админки. Списки в env пишутся через запятую,
     # `*` разрешает любой домен (но тогда нельзя использовать cookies)
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ['*']
@@ -78,11 +82,11 @@ class Settings(BaseSettings):
             raise ValueError('Port must be between 1 and 65535')
         return v
 
-    @field_validator('VIDEO_PRESIGN_TTL_SECONDS')
-    def validate_presign_ttl(cls, v: int) -> int:
+    @field_validator('VIDEO_PRESIGN_TTL_SECONDS', 'AUDIO_PRESIGN_TTL_SECONDS')
+    def validate_presign_ttl(cls, v: int, info: ValidationInfo) -> int:
         # Подпись AWS SigV4 не поддерживает срок жизни больше 7 суток
         if not 1 <= v <= 604800:
-            raise ValueError('VIDEO_PRESIGN_TTL_SECONDS должен быть от 1 до 604800 секунд')
+            raise ValueError(f'{info.field_name} должен быть от 1 до 604800 секунд')
         return v
 
     @property

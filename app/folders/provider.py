@@ -1,5 +1,6 @@
 from dishka import Provider, Scope, provide
 
+from app.audios.service.audios import AudiosService
 from app.core.context import Context
 from app.core.engines.database import Transaction
 from app.files.service.files import FilesService
@@ -9,7 +10,7 @@ from app.videos.service.videos import VideosService
 
 
 class FoldersProvider(Provider):
-    """Папки: репозиторий и сервис (файлы и видео берутся из своих провайдеров)."""
+    """Папки: репозиторий и сервис (файлы, видео и аудио берутся из своих провайдеров)."""
 
     @provide(scope=Scope.REQUEST)
     def get_folders_repository(
@@ -23,9 +24,11 @@ class FoldersProvider(Provider):
         folders_repository: FoldersRepository,
         files_service: FilesService,
         videos_service: VideosService,
+        audios_service: AudiosService,
     ) -> FoldersService:
         return FoldersService(
             folders_repository=folders_repository,
             files_service=files_service,
             videos_service=videos_service,
+            audios_service=audios_service,
         )

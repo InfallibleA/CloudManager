@@ -55,6 +55,19 @@ class EVideoType(BaseEnum):
     WEBM = 'webm'
 
 
+class EAudioType(BaseEnum):
+    """Типы аудио, которые принимает API."""
+
+    MP3 = 'mp3'
+    WAV = 'wav'
+    OGG = 'ogg'
+    AAC = 'aac'
+    FLAC = 'flac'
+    M4A = 'm4a'
+    OPUS = 'opus'
+    WEBM = 'webm'
+
+
 class EHealthStatus(BaseEnum):
     OK = 'ok'
     ERROR = 'error'

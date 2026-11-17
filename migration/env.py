@@ -6,12 +6,15 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app.audios.model.audio import Audio  # noqa: F401
 from app.config import settings
 from app.core.models.base import Base
 from app.core.models.soft_del import SoftDel  # noqa: F401
 from app.files.model.file import File  # noqa: F401
 from app.folders.model.folder import Folder  # noqa: F401
+from app.folders.model.folder_audio import folder_audios  # noqa: F401
 from app.folders.model.folder_file import folder_files  # noqa: F401
+from app.folders.model.folder_video import folder_videos  # noqa: F401
 from app.news.model.news import News  # noqa: F401
 from app.users.model.user import User  # noqa: F401
 from app.videos.model.video import Video  # noqa: F401

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.audios.endpoint.audios import router as audios_router
 from app.auth.endpoint.auth import router as auth_router
 from app.files.endpoint.files import router as files_router
 from app.folders.endpoint.folders import router as folders_router
@@ -10,6 +11,7 @@ from app.videos.endpoint.videos import router as videos_router
 # API приложения под общим префиксом /api
 router = APIRouter(prefix='/api')
 router.include_router(auth_router)
+router.include_router(audios_router)
 router.include_router(files_router)
 router.include_router(folders_router)
 router.include_router(news_router)
